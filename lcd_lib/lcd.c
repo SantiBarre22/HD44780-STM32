@@ -3,169 +3,117 @@
  *
  *  Created on: 10/06/2018
  *      Author: Olivier Van den Eede
+ *  Modified on: 18/05/2026
+ *      Author: Santiago Barrenechea
  */
 
+#include "lcd_command_register.h"
+#include "lcd_config.h"
 #include "lcd.h"
-const uint8_t ROW_16[] = {0x00, 0x40, 0x10, 0x50};
-const uint8_t ROW_20[] = {0x00, 0x40, 0x14, 0x54};
+#include "systick.h"
+
+#ifdef LCD_4_BIT_MODE
+    #define LCD_BUS_LEN 4
+#else
+    #define LCD_BUS_LEN 8
+#endif
+
+/************************************** Private constants ****************************************/
+
 /************************************** Static declarations **************************************/
 
-static void lcd_write_data(Lcd_HandleTypeDef * lcd, uint8_t data);
-static void lcd_write_command(Lcd_HandleTypeDef * lcd, uint8_t command);
-static void lcd_write(Lcd_HandleTypeDef * lcd, uint8_t data, uint8_t len);
-
+static void lcd_write(uint8_t mode, uint8_t data);
+static void lcd_bus(uint8_t data);
 
 /************************************** Function definitions **************************************/
 
 /**
- * Create new Lcd_HandleTypeDef and initialize the Lcd
+ * @brief  Initialize the LCD controller (HD44780 compatible).
+ * @note   Configures the LCD in 4-bit or 8-bit mode depending on the defined
+ *         macro. Display is turned on with no cursor and no blink.
+ *         Ensure power-on delay requirements are met before calling this function.
  */
-Lcd_HandleTypeDef Lcd_create(
-		Lcd_PortType port[], Lcd_PinType pin[],
-		Lcd_PortType rs_port, Lcd_PinType rs_pin,
-		Lcd_PortType en_port, Lcd_PinType en_pin, Lcd_ModeTypeDef mode)
+void Lcd_init(void)
 {
-	Lcd_HandleTypeDef lcd;
+	HAL_Delay(LCD_DELAY_POWER_ON_MS);
+    lcd_write(LCD_COMMAND_REG, LCD_FUNCTION_SET | LCD_8BIT);
+	HAL_Delay(LCD_DELAY_AFTER_RESET_1_MS);
+    lcd_write(LCD_COMMAND_REG, LCD_FUNCTION_SET | LCD_8BIT);
+    systick_delay_us(LCD_DELAY_AFTER_RESET_2_US);
+    lcd_write(LCD_COMMAND_REG, LCD_FUNCTION_SET | LCD_8BIT);
 
-	lcd.mode = mode;
+#ifdef LCD_4_BIT_MODE
+	lcd_write(LCD_COMMAND_REG, LCD_FUNCTION_SET | LCD_4BIT);
+	lcd_write(LCD_COMMAND_REG, LCD_FUNCTION_SET | LCD_4BIT | LCD_2LINE | LCD_5X8);
+#else
+    lcd_write(LCD_COMMAND_REG, LCD_FUNCTION_SET | LCD_8BIT | LCD_2LINE | LCD_5X8);
+#endif
 
-	lcd.en_pin = en_pin;
-	lcd.en_port = en_port;
+    lcd_write(LCD_COMMAND_REG, LCD_DISPLAY_CONTROL | LCD_DISPLAY_ON | LCD_CURSOR_OFF | LCD_BLINK_OFF);
+    systick_delay_us(LCD_DELAY_AFTER_RESET_2_US);
+    lcd_write(LCD_COMMAND_REG, LCD_CLEAR_DISPLAY);
+	HAL_Delay(LCD_DELAY_CLEAR_MS);
+	lcd_write(LCD_COMMAND_REG, LCD_ENTRY_MODE_SET | LCD_ENTRY_DECREMENT | LCD_ENTRY_SHIFT_OFF);
 
-	lcd.rs_pin = rs_pin;
-	lcd.rs_port = rs_port;
-
-	lcd.data_pin = pin;
-	lcd.data_port = port;
-
-	Lcd_init(&lcd);
-
-	return lcd;
 }
 
 /**
- * Initialize 16x2-lcd without cursor
+ * @brief  Write a single character at the current cursor position.
+ * @param  c: Character to display.
  */
-void Lcd_init(Lcd_HandleTypeDef * lcd)
+void Lcd_char(const char c)
 {
-	if(lcd->mode == LCD_4_BIT_MODE)
-	{
-			lcd_write_command(lcd, 0x33);
-			lcd_write_command(lcd, 0x32);
-			lcd_write_command(lcd, FUNCTION_SET | OPT_N);				// 4-bit mode
-	}
-	else
-		lcd_write_command(lcd, FUNCTION_SET | OPT_DL | OPT_N);
-
-
-	lcd_write_command(lcd, CLEAR_DISPLAY);						// Clear screen
-	lcd_write_command(lcd, DISPLAY_ON_OFF_CONTROL | OPT_D);		// Lcd-on, cursor-off, no-blink
-	lcd_write_command(lcd, ENTRY_MODE_SET | OPT_INC);			// Increment cursor
+    lcd_write(LCD_DATA_REG, c);
 }
 
 /**
- * Write a number on the current position
+ * @brief  Set the cursor to a specific position on the LCD.
+ * @param  row: Row index (0-based).
+ * @param  col: Column index (0-based).
  */
-void Lcd_int(Lcd_HandleTypeDef * lcd, int number)
+void Lcd_cursor(uint8_t row, uint8_t col)
 {
-	char buffer[11];
-	sprintf(buffer, "%d", number);
-
-	Lcd_string(lcd, buffer);
+    uint8_t addr;
+    switch (row)
+    {
+        case 0:  addr = LCD_LINE1_ADDR(col); break;
+        case 1:  addr = LCD_LINE2_ADDR(col); break;
+        default: return; // fila inválida
+    }
+    lcd_write(LCD_COMMAND_REG, addr);
 }
-
-/**
- * Write a string on the current position
- */
-void Lcd_string(Lcd_HandleTypeDef * lcd, char * string)
-{
-	for(uint8_t i = 0; i < strlen(string); i++)
-	{
-		lcd_write_data(lcd, string[i]);
-	}
-}
-
-/**
- * Set the cursor position
- */
-void Lcd_cursor(Lcd_HandleTypeDef * lcd, uint8_t row, uint8_t col)
-{
-	#ifdef LCD20xN
-	lcd_write_command(lcd, SET_DDRAM_ADDR + ROW_20[row] + col);
-	#endif
-
-	#ifdef LCD16xN
-	lcd_write_command(lcd, SET_DDRAM_ADDR + ROW_16[row] + col);
-	#endif
-}
-
-/**
- * Clear the screen
- */
-void Lcd_clear(Lcd_HandleTypeDef * lcd) {
-	lcd_write_command(lcd, CLEAR_DISPLAY);
-}
-
-void Lcd_define_char(Lcd_HandleTypeDef * lcd, uint8_t code, uint8_t bitmap[]){
-	lcd_write_command(lcd, SETCGRAM_ADDR + (code << 3));
-	for(uint8_t i=0;i<8;++i){
-		lcd_write_data(lcd, bitmap[i]);
-	}
-
-}
-
 
 /************************************** Static function definition **************************************/
 
 /**
- * Write a byte to the command register
+ * @brief  Write a byte to the LCD, selecting data or command register.
+ * @param  mode: Register select — LCD_DATA_REG or LCD_COMMAND_REG.
+ * @param  data: Byte to send.
+ * @note   In 4-bit mode the byte is split into two nibbles (high then low).
  */
-void lcd_write_command(Lcd_HandleTypeDef * lcd, uint8_t command)
+static void lcd_write(uint8_t mode, uint8_t data)
 {
-	HAL_GPIO_WritePin(lcd->rs_port, lcd->rs_pin, LCD_COMMAND_REG);		// Write to command register
+    HAL_GPIO_WritePin(rs_port, rs_pin, mode);
 
-	if(lcd->mode == LCD_4_BIT_MODE)
-	{
-		lcd_write(lcd, (command >> 4), LCD_NIB);
-		lcd_write(lcd, command & 0x0F, LCD_NIB);
-	}
-	else
-	{
-		lcd_write(lcd, command, LCD_BYTE);
-	}
-
+#ifdef LCD_4_BIT_MODE
+    lcd_bus(data >> 4);lcd_bus(data & 0x0F);
+#else
+    lcd_bus(data);
+#endif
 }
 
 /**
- * Write a byte to the data register
+ * @brief  Put data on the bus lines and pulse the enable line to latch it.
+ * @param  data: Nibble or byte to write, depending on LCD bus width.
+ * @note   Enable pulse width must be at least 450ns per HD44780 datasheet.
  */
-void lcd_write_data(Lcd_HandleTypeDef * lcd, uint8_t data)
+static void lcd_bus(uint8_t data)
 {
-	HAL_GPIO_WritePin(lcd->rs_port, lcd->rs_pin, LCD_DATA_REG);			// Write to data register
+    for (uint8_t i = 0; i < LCD_BUS_LEN; i++)
+        HAL_GPIO_WritePin(data_port[i], data_pin[i], (data >> i) & 0x01);
 
-	if(lcd->mode == LCD_4_BIT_MODE)
-	{
-		lcd_write(lcd, data >> 4, LCD_NIB);
-		lcd_write(lcd, data & 0x0F, LCD_NIB);
-	}
-	else
-	{
-		lcd_write(lcd, data, LCD_BYTE);
-	}
-
-}
-
-/**
- * Set len bits on the bus and toggle the enable line
- */
-void lcd_write(Lcd_HandleTypeDef * lcd, uint8_t data, uint8_t len)
-{
-	for(uint8_t i = 0; i < len; i++)
-	{
-		HAL_GPIO_WritePin(lcd->data_port[i], lcd->data_pin[i], (data >> i) & 0x01);
-	}
-
-	HAL_GPIO_WritePin(lcd->en_port, lcd->en_pin, 1);
-	DELAY(1);
-	HAL_GPIO_WritePin(lcd->en_port, lcd->en_pin, 0); 		// Data receive on falling edge
+    systick_delay_us(LCD_DELAY_CMD_US);
+    HAL_GPIO_WritePin(en_port, en_pin, GPIO_PIN_SET);
+    systick_delay_us(1);
+    HAL_GPIO_WritePin(en_port, en_pin, GPIO_PIN_RESET);
 }
