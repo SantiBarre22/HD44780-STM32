@@ -1,4 +1,5 @@
 Copyright (c) 2018 Olivier Van den Eede - ovde.be
+Copyright (c) 2026 Barrenechea Santiago
 
  Permission is hereby granted, free of charge, to any person
  obtaining a copy of this software and associated documentation
